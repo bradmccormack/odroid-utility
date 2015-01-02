@@ -2,6 +2,8 @@
 
 # Kernel update constants.
 KTMP="/tmp/kupdate"
+KERNEL_UPDATE="<Please check for update>"
+KERNEL_UPDATE_ENABLE=0
 
 # Boot.Scr's
 BOOT_SCR_UBUNTU="http://builder.mdrjr.net/tools/boot.scr_ubuntu.tar"
@@ -21,26 +23,26 @@ export C_K_PKG_URL="http://builder.mdrjr.net/kernel-3.10-c/00-LATEST"
 
 
 kernel_update() {
-	
+
 	get_board
-	
+
 	while true; do
-		KO=$(whiptail --backtitle "Hardkernel ODROID Utility v$_REV" --menu "Kernel Update/Configuration" 0 0 0 \
-		"1" "Update Kernel" \
+		KO=$(whiptail --backtitle "Hardkernel ODROID Utility $_REV" --menu "Kernel Update/Configuration" 0 0 0 \
+		"1" "Update/Restore Kernel" \
 		"2" "Install firmware files to /lib/firmware" \
 		"3" "Update boot.scr's" \
 		"4" "Update udev rules for ODROID subdevices (mali, cec..)" \
 		"5" "Update the bootloader" \
 		"6" "Exit" \
 		3>&1 1>&2 2>&3)
-	
+
 		KR=$?
-	
+
 		if [ $KR -eq 1 ]; then
 			return 0
 		else
 			case "$KO" in 
-				"1") do_kernel_update ;;
+				"1") do_kernel_operation ;;
 				"2") do_firmware_update ;;
 				"3") do_bootscript_update ;;
 				"4") do_udev_update ;;
@@ -57,7 +59,7 @@ do_kernel_download() {
 	rm -fr $KTMP
 	mkdir -p $KTMP
 	cd $KTMP
-	
+
 	if [ "$BOARD" = "odroidxu" ]; then
 		dlf_fast $XU_K_PKG_URL/$BOARD.tar.xz "Downloading ODROID-XU Kernel. Please wait." $KTMP/$BOARD.tar.xz
 		dlf_fast $XU_K_PKG_URL/$BOARD.tar.xz.md5sum "Downloading ODROID-XU Kernel MD5SUM. Please wait." $KTMP/$BOARD.tar.xz.md5sum
@@ -71,7 +73,7 @@ do_kernel_download() {
 		dlf_fast $K_PKG_URL/$BOARD.tar.xz "Downloading $BOARD Kernel. Please Wait." $KTMP/$BOARD.tar.xz
 		dlf_fast $K_PKG_URL/$BOARD.tar.xz.md5sum "Downloading $BOARD Kernel MD5SUM. Please Wait." $KTMP/$BOARD.tar.xz.md5sum
 	fi
-	
+
 	VALID=`cat $KTMP/$BOARD.tar.xz.md5sum | awk '{printf $1}'`
 	CURRENT=`md5sum $KTMP/$BOARD.tar.xz | awk '{printf $1}'`
 	if [ "$VALID" != "$CURRENT" ]; then
@@ -81,16 +83,122 @@ do_kernel_download() {
 }
 
 do_kernel_update() {
-	do_kernel_download
-	
-	case "$DISTRO" in 
-		"ubuntu")
-			do_ubuntu_kernel_update ;;
-		"debian")
-			do_debian_kernel_update ;;
-		*) msgbox "KERNEL-UPDATE: Distro not found. Shouldn't be here. Please report on the forums" ;;
-	esac
+		do_kernel_download
+
+		case "$DISTRO" in
+			"ubuntu")
+				do_ubuntu_kernel_update ;;
+			"debian")
+				do_debian_kernel_update ;;
+			*) msgbox "KERNEL-UPDATE: Distro not found. Shouldn't be here. Please report on the forums" ;;
+		esac
+
 }
+
+do_kernel_restore() {
+	BACKUPS=$(ls -1t /root/kernel-backup-*)
+	BACKUPSTR=""
+	for BACKUP in $BACKUPS; do
+		#Get Date substring component from current backup
+		FDATE=${BACKUP:20:16}
+		LOG="/root/kernel_update-log-$FDATE.txt"
+		INSTALLEDKERNEL=`grep -Ei uInitrd $LOG | cut -d " " -f 6`
+		BACKUPSTR=$BACKUPSTR"$FDATE $INSTALLEDKERNEL OFF"
+	done
+
+	BACKUPDATE=$(whiptail --title "Kernel Backups" --radiolist \
+	"Select a backup to restore" 20 40 4 \
+  	$BACKUPSTR \
+	3>&1 1>&2 2>&3)
+
+	ret=$?
+
+	if [ $ret -eq 1 ]; then
+		return 0
+	elif [ $ret -eq 0 ]; then
+		rm -fr $KTMP
+        	mkdir -p $KTMP
+		cd $KTMP
+		echo "Extracting backup /root/kernel-backup-$BACKUPDATE to $KTMPi.."
+		tar -xf /root/kernel-backup-$BACKUPDATE.tar.xz --overwrite
+		echo "Replacing kernel .."
+		cp $KTMP/media/boot/* /media/boot --force
+		echo "Replacing modules .."
+		cp $KTMP/lib/modules/* /lib/modules --force --recursive
+		rm -fr $KTMP
+		msgbox "KERNEL-RESTORE: Done. Your kernel should be updated now."
+	fi
+	#needs to go back to main menu
+	return 0
+}
+
+do_kernel_check_update() {
+	KERNEL_UPDATE=$(curl -L $BASE_URL 2>/dev/null | grep -Eo '[0-9]{1}.[0-9]{2}.[0-9]{2}' | head -n1)
+	if [ $KERNEL_REV != $KERNEL_UPDATE ]; then
+		KERNEL_UPDATE_ENABLE=1
+	else
+		KERNEL_UPDATE="$KERNEL_UPDATE <No Updates>"
+	fi
+
+	do_kernel_operation
+}
+
+do_configure_board_url() {
+	if [ -z ${BASE_URL+x} ]; then
+		if [ "$BOARD" = "odroidxu" ]; then
+			BASE_URL=$XU_K_PKG_URL
+        	elif [ "$BOARD" = "odroidxu3" ]; then
+                	BASE_URL=$XU3_K_PKG_URL
+        	elif [ "$BOARD" = "odroidc" ]; then
+			BASE_URL=$C_K_PKG_URL
+       		else
+			BASE_URL=$K_PKG_URL
+		fi
+        fi
+
+}
+
+
+do_kernel_operation() {
+		do_configure_board_url
+
+		KERNEL_REV=`uname -r`
+		if [ $KERNEL_UPDATE_ENABLE -eq 1 ]; then
+			CC=$(whiptail --backtitle "Hardkernel ODROID Utility $_REV" --menu "Installed Version \n$KERNEL_REV\nServer Version\n$KERNEL_UPDATE" 0 0 1 --cancel-button "Exit" --ok-button "Select" \
+			"1" "Check for Update" \
+			"2" "Update Kernel" \
+			"3" "Restore Kernel Backup" \
+			3>&1 1>&2 2>&3)
+		else
+			CC=$(whiptail --backtitle "Hardkernel ODROID Utility $_REV" --menu "Installed Version \n$KERNEL_REV\nServer Version\n$KERNEL_UPDATE" 0 0 1 --cancel-button "Exit" --ok-button "Select" \
+			"1" "Check for Update" \
+			"2" "Restore Kernel Backup" \
+			3>&1 1>&2 2>&3)
+		fi
+	ret=$?
+
+	if [ $ret -eq 1 ]; then
+		return 0
+	elif [ $ret -eq 0 ]; then
+		case "$CC" in
+			1)
+				do_kernel_check_update
+				;;
+			2)
+				if [ $KERNEL_UPDATE_ENABLE -eq 1 ]; then
+					do_kernel_update
+				else
+					do_kernel_restore
+				fi
+				;;
+			3)
+				do_kernel_restore
+				;;
+			*) ;;
+		esac
+	fi
+}
+
 
 do_firmware_update() {
 	rm -rf $KTMP
@@ -102,7 +210,7 @@ do_firmware_update() {
 	(cd /lib/firmware && tar xf $KTMP/firmware.tar)
 	msgbox "KERNEL-UPDATE: Done. Firmware updated"
 	rm -fr $KTMP
-	
+
 }
 
 do_bootscript_update() {
